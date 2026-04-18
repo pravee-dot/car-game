@@ -1,41 +1,26 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8"/>
+  <!-- இந்த line மிக முக்கியம் — mobile zoom disable பண்றது -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no"/>
   <title>Car Game</title>
-
-  <!-- ============================================================
-       CSS — Styling the page and canvas
-  ============================================================ -->
   <style>
-    /* Basic reset — remove default margin/padding */
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
 
-    /* Dark background so the road stands out */
     body {
       background: #1a1a2e;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100vh;
+      min-height: 100vh;
       font-family: sans-serif;
+      /* Mobile-இல் scroll, zoom ஆகாம இருக்க */
+      overflow: hidden;
+      touch-action: none;
     }
 
-    /* The canvas is our game screen */
-    canvas {
-      background: #2d2d2d;
-      border: 3px solid #444;
-      border-radius: 8px;
-      display: block;
-    }
-
-    /* Score display above the canvas */
     #scoreBoard {
       color: #ffffff;
       font-size: 18px;
@@ -43,31 +28,29 @@
       letter-spacing: 1px;
     }
 
-    /* Game Over overlay — hidden by default */
+    canvas {
+      background: #2d2d2d;
+      border: 3px solid #444;
+      border-radius: 8px;
+      display: block;
+    }
+
+    /* Game Over overlay */
     #gameOverScreen {
-      display: none;               /* hidden until game ends */
+      display: none;
       position: absolute;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       gap: 16px;
-      background: rgba(0, 0, 0, 0.75);
+      background: rgba(0,0,0,0.80);
       border-radius: 12px;
       padding: 2rem 3rem;
       text-align: center;
+      z-index: 10;
     }
-
-    #gameOverScreen h2 {
-      color: #ff4d4d;
-      font-size: 32px;
-    }
-
-    #gameOverScreen p {
-      color: #ccc;
-      font-size: 16px;
-    }
-
-    /* Restart button */
+    #gameOverScreen h2 { color: #ff4d4d; font-size: 28px; }
+    #gameOverScreen p  { color: #ccc; font-size: 15px; }
     #restartBtn {
       padding: 10px 28px;
       font-size: 16px;
@@ -77,330 +60,246 @@
       border-radius: 8px;
       cursor: pointer;
     }
+    #restartBtn:hover { background: #c73652; }
 
-    #restartBtn:hover {
-      background: #c73652;
+    /* ── Mobile touch buttons ── */
+    #touchControls {
+      display: flex;
+      gap: 40px;
+      margin-top: 16px;
+    }
+    #touchControls button {
+      width: 75px;
+      height: 75px;
+      font-size: 28px;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.12);
+      color: white;
+      border: 2px solid rgba(255,255,255,0.35);
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    #touchControls button:active {
+      background: rgba(255,255,255,0.30);
     }
   </style>
 </head>
 <body>
 
-  <!-- Score shown above canvas -->
   <div id="scoreBoard">Score: 0</div>
+  <canvas id="gameCanvas"></canvas>
 
-  <!-- The game renders here -->
-  <canvas id="gameCanvas" width="400" height="600"></canvas>
+  <!-- Touch buttons — mobile-இல் தெரியும், desktop-இலும் work ஆகும் -->
+  <div id="touchControls">
+    <button id="leftBtn">&#8592;</button>
+    <button id="rightBtn">&#8594;</button>
+  </div>
 
-  <!-- Game Over overlay (sits on top of canvas) -->
   <div id="gameOverScreen">
     <h2>Game Over!</h2>
     <p id="finalScore">Your score: 0</p>
     <button id="restartBtn">Restart</button>
   </div>
 
-
-  <!-- ============================================================
-       JAVASCRIPT — All game logic
-  ============================================================ -->
   <script>
-
-    // ── 1. SETUP ─────────────────────────────────────────────────
-
-    // Grab the canvas element and get its 2D drawing context
-    // ctx is like a pen — we use it to draw everything
     const canvas = document.getElementById('gameCanvas');
     const ctx    = canvas.getContext('2d');
 
-    // UI elements
-    const scoreBoard    = document.getElementById('scoreBoard');
+    // ── Screen size-க்கு canvas fit பண்றோம் ──
+    const isMobile  = window.innerWidth < 500;
+    canvas.width    = isMobile ? Math.min(window.innerWidth - 16, 380) : 400;
+    canvas.height   = isMobile ? Math.floor(window.innerHeight * 0.60) : 600;
+
+    const scoreBoard     = document.getElementById('scoreBoard');
     const gameOverScreen = document.getElementById('gameOverScreen');
-    const finalScore    = document.getElementById('finalScore');
-    const restartBtn    = document.getElementById('restartBtn');
+    const finalScoreEl   = document.getElementById('finalScore');
+    const restartBtn     = document.getElementById('restartBtn');
 
-    // ── 2. GAME STATE VARIABLES ──────────────────────────────────
+    let score       = 0;
+    let gameRunning = true;
+    let frameCount  = 0;
+    let gameSpeed   = 4;
 
-    let score       = 0;      // Player's current score
-    let gameRunning = true;   // Is the game active?
-    let frameCount  = 0;      // Counts every frame — used for score timing
-    let gameSpeed   = 4;      // How fast enemies & lane lines move down
+    // Road boundaries (scaled to canvas width)
+    const roadLeft  = canvas.width * 0.15;
+    const roadRight = canvas.width * 0.85;
 
-    // ── 3. PLAYER CAR ───────────────────────────────────────────
-
+    // ── Player ──
     const player = {
-      x: 160,        // Starting X position (center of 400px canvas)
-      y: 500,        // Near the bottom of the canvas
+      x: canvas.width / 2 - 20,
+      y: canvas.height - 90,
       width: 40,
       height: 70,
-      speed: 5,      // How many pixels it moves left/right per frame
+      speed: 5,
       color: '#00d4ff',
-      movingLeft: false,   // Is the left arrow held down?
-      movingRight: false   // Is the right arrow held down?
+      movingLeft: false,
+      movingRight: false
     };
 
-    // Road boundaries — the car can't go outside these
-    const roadLeft  = 60;
-    const roadRight = 340;  // roadRight - player.width = rightmost X player can reach
-
-    // ── 4. LANE LINES ────────────────────────────────────────────
-
-    // Lane lines are white dashes that scroll down to give the
-    // illusion that the car is moving forward
-    const laneLines = [];
-    const laneLineHeight = 60;   // Height of each dash
-    const laneLineGap    = 40;   // Gap between dashes
-    const laneLineWidth  = 8;
-
-    // Create enough lane lines to fill the screen
-    // We need canvas.height / (laneLineHeight + laneLineGap) lines per lane
+    // ── Lane lines ──
+    const laneLines     = [];
+    const laneLineH     = 60;
+    const laneLineGap   = 40;
+    const laneLineW     = 8;
     for (let i = 0; i < 10; i++) {
-      laneLines.push({
-        x: 195,   // Center of canvas (single center lane line)
-        y: i * (laneLineHeight + laneLineGap)  // Spread them out vertically
-      });
+      laneLines.push({ x: canvas.width / 2 - 4, y: i * (laneLineH + laneLineGap) });
     }
 
-    // ── 5. ENEMY CARS ────────────────────────────────────────────
+    // ── Enemies ──
+    const enemies      = [];
+    const enemyColors  = ['#ff4d4d','#ff9f43','#ff6b9d','#a29bfe'];
+    const lanes        = [
+      roadLeft + 20,
+      canvas.width / 2 - 20,
+      roadRight - 60
+    ];
 
-    // Enemy cars come from the top and move down
-    // We keep 3 enemies at all times in this array
-    const enemies = [];
-    const enemyColors = ['#ff4d4d', '#ff9f43', '#ff6b9d', '#a29bfe'];
-
-    // Possible X positions for enemies — 3 lanes
-    const lanes = [80, 180, 265];
-
-    // Create 3 enemy cars with staggered starting positions
-    for (let i = 0; i < 3; i++) {
-      enemies.push(createEnemy(i));
-    }
-
-    // Returns a new enemy object
-    // index is used to stagger their starting Y positions
     function createEnemy(index) {
-      const lane  = lanes[Math.floor(Math.random() * lanes.length)];
-      const color = enemyColors[Math.floor(Math.random() * enemyColors.length)];
       return {
-        x: lane,
-        y: -100 - (index * 220),   // Start above the canvas, staggered
-        width: 40,
+        x:      lanes[Math.floor(Math.random() * lanes.length)],
+        y:      -100 - index * 220,
+        width:  40,
         height: 70,
-        color: color,
-        speed: gameSpeed + Math.random() * 2   // Slightly varied speed
+        color:  enemyColors[Math.floor(Math.random() * enemyColors.length)],
+        speed:  gameSpeed + Math.random() * 2
       };
     }
+    for (let i = 0; i < 3; i++) enemies.push(createEnemy(i));
 
-    // ── 6. KEYBOARD INPUT ────────────────────────────────────────
-
-    // When a key is pressed down, mark that direction as active
+    // ── Keyboard input ──
     document.addEventListener('keydown', function(e) {
       if (e.key === 'ArrowLeft')  player.movingLeft  = true;
       if (e.key === 'ArrowRight') player.movingRight = true;
     });
-
-    // When a key is released, stop moving that direction
     document.addEventListener('keyup', function(e) {
       if (e.key === 'ArrowLeft')  player.movingLeft  = false;
       if (e.key === 'ArrowRight') player.movingRight = false;
     });
 
-    // ── 7. DRAWING FUNCTIONS ─────────────────────────────────────
+    // ── Touch input (mobile) ──
+    const leftBtn  = document.getElementById('leftBtn');
+    const rightBtn = document.getElementById('rightBtn');
 
-    // Draw the road (grey strip with kerbs on either side)
+    leftBtn.addEventListener('touchstart',  function(e) { e.preventDefault(); player.movingLeft  = true;  });
+    leftBtn.addEventListener('touchend',    function()  { player.movingLeft  = false; });
+    leftBtn.addEventListener('touchcancel', function()  { player.movingLeft  = false; });
+
+    rightBtn.addEventListener('touchstart',  function(e) { e.preventDefault(); player.movingRight = true;  });
+    rightBtn.addEventListener('touchend',    function()  { player.movingRight = false; });
+    rightBtn.addEventListener('touchcancel', function()  { player.movingRight = false; });
+
+    // Mouse support (desktop button click panning)
+    leftBtn.addEventListener('mousedown',  function() { player.movingLeft  = true;  });
+    leftBtn.addEventListener('mouseup',    function() { player.movingLeft  = false; });
+    rightBtn.addEventListener('mousedown', function() { player.movingRight = true;  });
+    rightBtn.addEventListener('mouseup',   function() { player.movingRight = false; });
+
+    // ── Draw functions ──
     function drawRoad() {
-      // Main road surface
       ctx.fillStyle = '#3d3d3d';
       ctx.fillRect(roadLeft, 0, roadRight - roadLeft, canvas.height);
-
-      // Left kerb (white/red striped edge)
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(roadLeft - 10, 0, 10, canvas.height);
-
-      // Right kerb
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(roadRight, 0, 10, canvas.height);
+      ctx.fillRect(roadRight,     0, 10, canvas.height);
     }
 
-    // Draw and scroll lane lines
     function drawLaneLines() {
       ctx.fillStyle = '#ffffff';
       laneLines.forEach(function(line) {
-        // Move each line down each frame
         line.y += gameSpeed;
-
-        // When a line scrolls off the bottom, reset it to the top
-        if (line.y > canvas.height) {
-          line.y = -(laneLineHeight);
-        }
-
-        ctx.fillRect(line.x, line.y, laneLineWidth, laneLineHeight);
+        if (line.y > canvas.height) line.y = -laneLineH;
+        ctx.fillRect(line.x, line.y, laneLineW, laneLineH);
       });
     }
 
-    // Draw a car — used for both player and enemy cars
-    // x, y = top-left corner, w = width, h = height, color = body color
     function drawCar(x, y, w, h, color) {
-      // Car body
       ctx.fillStyle = color;
       ctx.beginPath();
       ctx.roundRect(x, y, w, h, 6);
       ctx.fill();
-
-      // Windshield (top)
       ctx.fillStyle = 'rgba(0,0,0,0.5)';
-      ctx.fillRect(x + 6, y + 8, w - 12, 18);
-
-      // Rear window (bottom)
+      ctx.fillRect(x + 6, y + 8,      w - 12, 18);
       ctx.fillRect(x + 6, y + h - 26, w - 12, 16);
-
-      // Left headlight
       ctx.fillStyle = '#fffde7';
-      ctx.fillRect(x + 4, y + h - 12, 10, 8);
-
-      // Right headlight
+      ctx.fillRect(x + 4,      y + h - 12, 10, 8);
       ctx.fillRect(x + w - 14, y + h - 12, 10, 8);
     }
 
-    // Draw enemy cars and move them downward
     function drawEnemies() {
-      enemies.forEach(function(enemy, index) {
-        // Move enemy down
+      enemies.forEach(function(enemy, i) {
         enemy.y += enemy.speed;
-
-        // If it goes off the bottom, reset it to above the top
         if (enemy.y > canvas.height + 50) {
-          enemies[index] = createEnemy(0);
-          enemies[index].y = -100;   // Reset to top
+          enemies[i]   = createEnemy(0);
+          enemies[i].y = -100;
         }
-
         drawCar(enemy.x, enemy.y, enemy.width, enemy.height, enemy.color);
       });
     }
 
-    // Draw the player car
     function drawPlayer() {
-      // Move left — but stop at road boundary
       if (player.movingLeft) {
         player.x -= player.speed;
         if (player.x < roadLeft + 5) player.x = roadLeft + 5;
       }
-
-      // Move right — but stop at road boundary
       if (player.movingRight) {
         player.x += player.speed;
-        if (player.x + player.width > roadRight - 5) {
-          player.x = roadRight - player.width - 5;
-        }
+        if (player.x + player.width > roadRight - 5) player.x = roadRight - player.width - 5;
       }
-
       drawCar(player.x, player.y, player.width, player.height, player.color);
     }
 
-    // ── 8. COLLISION DETECTION ───────────────────────────────────
-
-    // Rectangle overlap check:
-    // Two rectangles collide if they overlap on BOTH the X axis and Y axis
     function checkCollision() {
       for (let i = 0; i < enemies.length; i++) {
         const e = enemies[i];
-
-        const colliding =
-          player.x < e.x + e.width   &&   // player left edge < enemy right edge
-          player.x + player.width > e.x   &&   // player right edge > enemy left edge
-          player.y < e.y + e.height  &&   // player top edge < enemy bottom edge
-          player.y + player.height > e.y;      // player bottom edge > enemy top edge
-
-        if (colliding) {
-          endGame();
-        }
+        if (
+          player.x < e.x + e.width  &&
+          player.x + player.width > e.x &&
+          player.y < e.y + e.height &&
+          player.y + player.height > e.y
+        ) { endGame(); }
       }
     }
 
-    // ── 9. SCORE ─────────────────────────────────────────────────
-
     function updateScore() {
-      // Increase score every 6 frames (~10 times per second at 60fps)
       frameCount++;
       if (frameCount % 6 === 0) {
         score++;
         scoreBoard.textContent = 'Score: ' + score;
       }
-
-      // Every 500 points, increase game speed (up to max speed of 12)
-      if (score % 500 === 0 && score > 0 && gameSpeed < 12) {
-        gameSpeed += 0.5;
-      }
+      if (score > 0 && score % 500 === 0 && gameSpeed < 12) gameSpeed += 0.5;
     }
-
-    // ── 10. GAME OVER ─────────────────────────────────────────────
 
     function endGame() {
       gameRunning = false;
-      finalScore.textContent = 'Your score: ' + score;
+      finalScoreEl.textContent = 'Your score: ' + score;
       gameOverScreen.style.display = 'flex';
     }
 
-    // ── 11. RESTART ───────────────────────────────────────────────
-
     restartBtn.addEventListener('click', function() {
-      // Reset all state
-      score      = 0;
-      frameCount = 0;
-      gameSpeed  = 4;
-      gameRunning = true;
-
-      // Reset player position
-      player.x = 160;
-      player.movingLeft  = false;
-      player.movingRight = false;
-
-      // Reset enemies
-      for (let i = 0; i < enemies.length; i++) {
-        enemies[i] = createEnemy(i);
-      }
-
-      // Reset lane lines
-      for (let i = 0; i < laneLines.length; i++) {
-        laneLines[i].y = i * (laneLineHeight + laneLineGap);
-      }
-
-      // Hide the game over screen
+      score = 0; frameCount = 0; gameSpeed = 4; gameRunning = true;
+      player.x = canvas.width / 2 - 20;
+      player.movingLeft = player.movingRight = false;
+      for (let i = 0; i < enemies.length; i++) enemies[i] = createEnemy(i);
+      for (let i = 0; i < laneLines.length; i++) laneLines[i].y = i * (laneLineH + laneLineGap);
       gameOverScreen.style.display = 'none';
-
-      // Update scoreboard
       scoreBoard.textContent = 'Score: 0';
-
-      // Restart the game loop
       requestAnimationFrame(gameLoop);
     });
 
-    // ── 12. MAIN GAME LOOP ────────────────────────────────────────
-
-    // This function runs ~60 times per second
-    // Order matters: clear → draw road → draw lines → draw enemies → draw player → check collision → update score
     function gameLoop() {
-      if (!gameRunning) return;   // Stop the loop if game is over
-
-      // Clear the entire canvas before drawing the next frame
+      if (!gameRunning) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-      // Draw everything in the correct order (back to front)
       drawRoad();
       drawLaneLines();
       drawEnemies();
       drawPlayer();
-
-      // Game logic checks
       checkCollision();
       updateScore();
-
-      // Ask the browser to call gameLoop again on the next frame
       requestAnimationFrame(gameLoop);
     }
 
-    // ── START THE GAME ────────────────────────────────────────────
     requestAnimationFrame(gameLoop);
-
   </script>
-
 </body>
 </html>
